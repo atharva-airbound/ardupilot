@@ -372,12 +372,13 @@ void Plane::calculate_forces(const struct sitl_input &input, Vector3f &rot_accel
     thrust *= thrust_scale;
 
     accel_body = Vector3f(thrust, 0, 0) + force;
+
     accel_body /= mass;
 
-    // add some noise
-    if (thrust_scale > 0) {
-        add_noise(fabsf(thrust) / thrust_scale);
-    }
+    // allow external force/torque injection via SIM_SHOVE_* and SIM_TWIST_* params
+    // placed after mass division so shove values are in m/s/s (consistent with multicopter model)
+    add_shove_forces(rot_accel, accel_body);
+    add_twist_forces(rot_accel);
 
     if (on_ground() && !tailsitter) {
         // add some ground friction
