@@ -108,7 +108,7 @@ void AP_InertialSensor_SITL::generate_accel()
 
         // minimum noise levels are 2 bits, but averaged over many
         // samples, giving around 0.01 m/s/s
-        float accel_noise = 0.01f;
+        float accel_noise = 0;
         float noise_variation = 0.05f;
         // this smears the individual motor peaks somewhat emulating physical motors
         float freq_variation = 0.12f;
@@ -216,7 +216,7 @@ void AP_InertialSensor_SITL::generate_gyro()
         float r = radians(sitl->state.yawRate) + _gyro_drift;
 
         // minimum gyro noise is less than 1 bit
-        float gyro_noise = ToRad(0.04f);
+        float gyro_noise = 0;
         constexpr float noise_variation = 0.05f;
         // this smears the individual motor peaks somewhat emulating physical motors
         constexpr float freq_variation = 0.12f;
