@@ -184,3 +184,10 @@ template <typename T> void BIT_CLEAR (T& value, uint8_t bitnumber) noexcept {
      ((value) &= ~((T)(1U) << (bitnumber)));
  }
 
+/*
+  See the comments in libraries/AP_Common/c++.cpp
+ */
+#ifndef NEW_NOTHROW
+#define NEW_NOTHROW new(std::nothrow)
+#endif
+

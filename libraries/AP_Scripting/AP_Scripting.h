@@ -39,6 +39,7 @@
 class SocketAPM;
 #endif
 
+#include <AP_SerialManager/AP_SerialManager_config.h>
 #ifndef AP_SCRIPTING_SERIALDEVICE_ENABLED
 #define AP_SCRIPTING_SERIALDEVICE_ENABLED AP_SERIALMANAGER_REGISTER_ENABLED && (BOARD_FLASH_SIZE>1024)
 #endif

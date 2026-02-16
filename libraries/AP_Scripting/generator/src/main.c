@@ -367,6 +367,7 @@ struct method_alias {
   char *alias;
   int line;
   int num_args;
+  int num_ret;
   enum alias_type type;
   char *dependency;
 };
@@ -887,6 +888,12 @@ void handle_manual(struct userdata *node, enum alias_type type) {
       error(ERROR_SINGLETON, "Expected number of args for manual method %s %s", node->name, name);
     }
     alias->num_args = atoi(num_args);
+
+    char *num_ret = next_token();
+    if (num_ret == NULL) {
+      error(ERROR_SINGLETON, "Expected number of returns for manual method %s %s", node->name, name);
+    }
+    alias->num_ret = atoi(num_ret);
   }
 
   char *depends_keyword = next_token();
@@ -2399,8 +2406,8 @@ void emit_sandbox(void) {
     // Dont expose creation function for all read only items
     int expose_creation = FALSE;
     if (data->creation || data->methods) {
-      // Custom creation or methods
-      expose_creation = TRUE;
+      // Custom creation or methods, if not specifically disabled
+      expose_creation = !(data->creation && data->creation_args == -1);
     } else {
       // Feilds only
       struct userdata_field * field = data->fields;
