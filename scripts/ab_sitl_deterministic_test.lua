@@ -17,6 +17,7 @@ local GCS_INFO = 6
 -- Plane mode numbers
 local MODE_MANUAL  = 0
 local MODE_QLOITER = 19
+local MODE_QLAND   = 20
 
 -- State machine
 local STATE_WAIT_INIT     = 0
@@ -30,7 +31,7 @@ local STATE_APPLY_SHOVE   = 7
 local STATE_WAIT_SHOVE    = 8
 local STATE_APPLY_TWIST   = 9
 local STATE_WAIT_TWIST    = 10
-local STATE_DISARM        = 11
+local STATE_LAND          = 11
 local STATE_DONE          = 12
 
 local state = STATE_WAIT_INIT
@@ -45,10 +46,14 @@ local RC3_HOLD  = 1500    -- mid-stick = hold altitude
 local RC3_IDLE  = 1000    -- minimum throttle (idle)
 
 -- Disturbance parameters
-local SHOVE_ACCEL = 5.0    -- m/s/s body-frame lateral push
-local SHOVE_DURATION = 500  -- ms
-local TWIST_ACCEL = 3.0    -- rad/s/s yaw torque
-local TWIST_DURATION = 500  -- ms
+local SHOVE_ACCEL_X = 20.0    -- m/s/s body-frame lateral push in the X axis
+local SHOVE_ACCEL_Y = 20.0    -- m/s/s body-frame lateral push in the Y axis
+local SHOVE_ACCEL_Z = 2.0    -- m/s/s body-frame lateral push in the Z axis
+local SHOVE_DURATION = 1000  -- ms
+local TWIST_ACCEL_X = 5.0    -- rad/s/s yaw torque about the X axis
+local TWIST_ACCEL_Y = 1.0    -- rad/s/s yaw torque about the Y axis
+local TWIST_ACCEL_Z = 1.0    -- rad/s/s yaw torque about the Z axis
+local TWIST_DURATION = 1000  -- ms
 local STABILIZE_TIME = 10000 -- ms to let QLOITER settle at altitude
 local RECOVERY_TIME = 10000 -- ms to observe recovery after disturbance
 
@@ -61,8 +66,8 @@ local function set_test_params()
     param:set_and_save("FS_LONG_ACTN", 0)
     param:set_and_save("THR_FAILSAFE", 0)
 
-    -- Log while disarmed so we capture the full boot sequence
-    param:set_and_save("LOG_DISARMED", 1)
+    -- Do not log while disarmed
+    param:set_and_save("LOG_DISARMED", 0)
 
     -- Disable all sensor noise sources for determinism
     param:set_and_save("SIM_GYR1_RND", 0)
@@ -176,11 +181,12 @@ function update()
         local ch3 = rc:get_channel(3)
         ch3:set_override(RC3_HOLD)
         -- Apply a lateral body-frame push (Y axis = sideways in copter frame)
-        param:set_and_save("SIM_SHOVE_X", 0)
-        param:set_and_save("SIM_SHOVE_Y", SHOVE_ACCEL)
-        param:set_and_save("SIM_SHOVE_Z", 0)
+        param:set_and_save("SIM_SHOVE_X", SHOVE_ACCEL_X)
+        param:set_and_save("SIM_SHOVE_Y", SHOVE_ACCEL_Y)
+        param:set_and_save("SIM_SHOVE_Z", SHOVE_ACCEL_Z)
         param:set_and_save("SIM_SHOVE_TIME", SHOVE_DURATION)
-        gcs:send_text(GCS_INFO, string.format("AB_TEST: SHOVE applied Y=%.1f m/s/s for %dms", SHOVE_ACCEL, SHOVE_DURATION))
+        gcs:send_text(GCS_INFO, string.format("AB_TEST: SHOVE; [%.1f %.1f %.1f] m/s/s; %d ms",
+                                              SHOVE_ACCEL_X, SHOVE_ACCEL_Y, SHOVE_ACCEL_Z, SHOVE_DURATION))
         state_timer = millis()
         state = STATE_WAIT_SHOVE
 
@@ -198,11 +204,12 @@ function update()
         local ch3 = rc:get_channel(3)
         ch3:set_override(RC3_HOLD)
         -- Apply a yaw torque (Z axis rotation in copter frame)
-        param:set_and_save("SIM_TWIST_X", 0)
-        param:set_and_save("SIM_TWIST_Y", 0)
-        param:set_and_save("SIM_TWIST_Z", TWIST_ACCEL)
+        param:set_and_save("SIM_TWIST_X", TWIST_ACCEL_X)
+        param:set_and_save("SIM_TWIST_Y", TWIST_ACCEL_Y)
+        param:set_and_save("SIM_TWIST_Z", TWIST_ACCEL_Z)
         param:set_and_save("SIM_TWIST_TIME", TWIST_DURATION)
-        gcs:send_text(GCS_INFO, string.format("AB_TEST: TWIST applied Z=%.1f rad/s/s for %dms", TWIST_ACCEL, TWIST_DURATION))
+        gcs:send_text(GCS_INFO, string.format("AB_TEST: TWIST; [%.1f %.1f %.1f] rad/s/s; %d ms",
+                                              TWIST_ACCEL_X, TWIST_ACCEL_Y, TWIST_ACCEL_Z, TWIST_DURATION))
         state_timer = millis()
         state = STATE_WAIT_TWIST
 
@@ -213,18 +220,30 @@ function update()
         if elapsed > TWIST_DURATION + RECOVERY_TIME then
             local alt = get_alt()
             gcs:send_text(GCS_INFO, string.format("AB_TEST: recovery complete, alt=%.1fm", alt))
-            state = STATE_DISARM
+            state = STATE_LAND
         end
 
-    elseif state == STATE_DISARM then
-        param:set_and_save("LOG_DISARMED", 0)
-        arming:disarm()
-        gcs:send_text(GCS_INFO, "AB_TEST: disarmed, test complete")
-        state = STATE_DONE
+    elseif state == STATE_LAND then
+        -- Switch to QLAND for autonomous controlled descent and auto-disarm on touchdown.
+        -- Don't refresh RC3 override here; it will expire after RC_OVERRIDE_TIME (3s)
+        -- and QLAND ignores pilot throttle anyway.
+        if vehicle:set_mode(MODE_QLAND) then
+            gcs:send_text(GCS_INFO, "AB_TEST: QLAND mode set, descending")
+            state_timer = millis()
+            state = STATE_DONE
+        end
 
     elseif state == STATE_DONE then
-        gcs:send_text(GCS_INFO, "AB_TEST: script finished")
-        return -- stop scheduling
+        -- Wait for QLAND to auto-disarm on touchdown, then stop the script.
+        if not arming:is_armed() then
+            gcs:send_text(GCS_INFO, "AB_TEST: landed and disarmed, test complete")
+            return -- stop scheduling
+        end
+        local elapsed = millis() - state_timer
+        if elapsed > 60000 then
+            gcs:send_text(GCS_INFO, "AB_TEST: QLAND timeout, stopping")
+            return -- stop scheduling
+        end
     end
 
     return update, LOOP_INTERVAL_MS

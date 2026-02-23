@@ -3,5 +3,12 @@ ARMING_CHECK 0
 FS_SHORT_ACTN 0
 FS_LONG_ACTN 0
 THR_FAILSAFE 0
-LOG_DISARMED 1
+LOG_DISARMED 0
 Q_TAILSIT_ENABLE 1
+# Reduce QLOITER position loop gains for SITL.
+# Hardware gains (POSXY_P=0.5, VELXY_P=1.0) are tuned with motor delays which
+# SITL lacks, making the position loop oscillate at ~2s period.  Lower values
+# give a stable, overdamped hover so disturbance responses are clean.
+Q_P_POSXY_P 0.1
+Q_P_VELXY_P 0.1
+Q_P_VELXY_D 0.2
