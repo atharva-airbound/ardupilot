@@ -1,0 +1,342 @@
+name: Build Firmware and Upload to Google Drive
+
+on:
+  push:
+    branches:
+      - airbound-develop
+      - airbound-develop-4.6.3
+
+  # trigger on every PR
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{github.workflow}}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-chibios:
+    # ignore draft PRs
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-22.04
+    container: ardupilot/ardupilot-dev-chibios:v0.1.3
+    strategy:
+      fail-fast: false
+      matrix:
+        board:
+          - AB-TRT
+          - AB-MOD
+          - AB-V2
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Prepare ccache timestamp
+        id: ccache_cache_timestamp
+        run: |
+          NOW=$(date -u +"%F-%T")
+          echo "timestamp=${NOW}" >> $GITHUB_OUTPUT
+
+      - name: ccache cache files
+        uses: actions/cache@v3
+        with:
+          path: ~/.ccache
+          key: ${{github.workflow}}-ccache-${{ matrix.board }}-${{steps.ccache_cache_timestamp.outputs.timestamp}}
+          restore-keys: ${{github.workflow}}-ccache-${{ matrix.board }}
+
+      - name: Setup ccache
+        run: |
+          . .github/workflows/ccache.env
+
+      - name: Build ${{ matrix.board }}
+        run: |
+          git config --global --add safe.directory ${GITHUB_WORKSPACE}
+          PATH="/usr/lib/ccache:/opt/gcc-arm-none-eabi-10/bin:$PATH"
+          ./waf configure --board ${{ matrix.board }}
+          ./waf plane
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p firmware_output/${{ matrix.board }}
+          cp build/${{ matrix.board }}/bin/arduplane.apj firmware_output/${{ matrix.board }}/arduplane.apj
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.board }}
+          path: firmware_output/${{ matrix.board }}/
+          retention-days: 90
+
+  build-sitl:
+    # Set the repository variable BUILD_SITL to "false" to skip this job
+    # The Drive upload treats a skipped SITL build as acceptable but requires it not to fail.
+    if: ${{ vars.BUILD_SITL != 'false' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: 'recursive'
+
+      - name: Prepare ccache timestamp
+        id: ccache_cache_timestamp
+        shell: bash
+        run: |
+          NOW=$(date -u +"%F-%T")
+          echo "timestamp=${NOW}" >> $GITHUB_OUTPUT
+
+      - uses: cygwin/cygwin-install-action@v6
+        with:
+          packages: cygwin64 gcc-g++=13.4.0-1 ccache python312 python312-pip git procps gettext
+          add-to-path: false
+
+      - name: Setup ccache
+        env:
+          PATH: /usr/bin:$(cygpath ${SYSTEMROOT})/system32
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: >-
+          CYGPATH_GITHUB_WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE") &&
+          mkdir -p "${CYGPATH_GITHUB_WORKSPACE}/ccache" &&
+          mkdir -p /usr/local/etc &&
+          echo "export CCACHE_SLOPPINESS=file_stat_matches" >> ~/ccache.conf &&
+          echo "export CCACHE_DIR=${CYGPATH_GITHUB_WORKSPACE}/ccache" >> ~/ccache.conf &&
+          echo "export CCACHE_BASEDIR=${CYGPATH_GITHUB_WORKSPACE}" >> ~/ccache.conf &&
+          echo "export CCACHE_COMPRESS=1" >> ~/ccache.conf &&
+          echo "export CCACHE_COMPRESSLEVEL=6" >> ~/ccache.conf &&
+          echo "export CCACHE_MAXSIZE=400M" >> ~/ccache.conf &&
+          source ~/ccache.conf &&
+          ccache -s
+
+      - name: ccache cache files
+        uses: actions/cache@v5
+        with:
+          path: D:/a/ardupilot/ardupilot/ccache
+          key: ${{github.workflow}}-ccache-sitl-${{steps.ccache_cache_timestamp.outputs.timestamp}}
+          restore-keys: ${{github.workflow}}-ccache-sitl-
+
+      - name: Prepare Python environment
+        env:
+          PATH: /usr/bin:$(cygpath ${SYSTEMROOT})/system32
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: >-
+          python3 --version &&
+          python3 -m pip install --progress-bar off empy==3.3.4 pexpect future &&
+          python3 -m pip install --progress-bar off dronecan --upgrade &&
+          cp /usr/bin/ccache /usr/local/bin/ &&
+          cd /usr/local/bin && ln -s ccache /usr/local/bin/gcc &&
+          ln -s ccache /usr/local/bin/g++ &&
+          ln -s ccache /usr/local/bin/x86_64-pc-cygwin-gcc &&
+          ln -s ccache /usr/local/bin/x86_64-pc-cygwin-g++
+
+      - name: Build SITL
+        env:
+          PATH: /usr/bin:$(cygpath ${SYSTEMROOT})/system32
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: >-
+          CYGPATH_GITHUB_WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE") &&
+          git config --global --add safe.directory "${CYGPATH_GITHUB_WORKSPACE}" &&
+          export PATH=/usr/local/bin:/usr/bin:$(cygpath ${SYSTEMROOT})/system32 &&
+          source ~/ccache.conf &&
+          Tools/scripts/cygwin_build_plane.sh &&
+          ccache -s
+
+      - name: Upload SITL artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: firmware-sitl
+          path: artifacts/
+          retention-days: 90
+
+  upload-to-drive:
+    needs: [build-chibios, build-sitl]
+    if: ${{ !cancelled() && needs.build-chibios.result == 'success' && needs.build-sitl.result != 'failure' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: ArduPlane/version.h
+          sparse-checkout-cone-mode: false
+
+      - name: Extract version and tag
+        id: version
+        run: |
+          RAW=$(grep '#define THISFIRMWARE' ArduPlane/version.h | sed 's/#define THISFIRMWARE "\(.*\)"/\1/')
+          echo "raw=${RAW}"
+
+          # Extract version number (e.g. 4.5.7.3)
+          VERSION=$(echo "${RAW}" | grep -oP 'V\K[0-9]+(\.[0-9]+)+')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+          # Extract tag: rc1, rc6, hf1, hf2, etc.
+          TAG_NUM=$(echo "${RAW}" | grep -oiP '(rc|hf)\K[0-9]+' | head -1 || true)
+          TAG_PREFIX=$(echo "${RAW}" | grep -oiP '(rc|hf)(?=[0-9])' | head -1 | tr '[:upper:]' '[:lower:]' || true)
+          if [ -n "$TAG_NUM" ]; then
+            echo "tag=${TAG_PREFIX}${TAG_NUM}" >> $GITHUB_OUTPUT
+            echo "tag_type=${TAG_PREFIX}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=" >> $GITHUB_OUTPUT
+            echo "tag_type=release" >> $GITHUB_OUTPUT
+          fi
+
+          echo "Parsed version=${VERSION} tag=${TAG_PREFIX}${TAG_NUM:-none} type=${TAG_PREFIX:-release}"
+
+      - name: Download ChibiOS firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-AB-*
+          path: firmware_artifacts/
+
+      - name: Download SITL artifacts
+        if: needs.build-sitl.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-sitl
+          path: sitl_artifacts/
+
+      - name: List all artifacts
+        run: find firmware_artifacts/ sitl_artifacts/ -type f 2>/dev/null | sort || true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install google-api-python-client google-auth
+
+      - name: Upload to Google Drive
+        env:
+          GDRIVE_SA_KEY: ${{ secrets.GDRIVE_SA_KEY }}
+          GDRIVE_RC_FOLDER_ID: ${{ secrets.GDRIVE_RC_FOLDER_ID }}
+          GDRIVE_RELEASE_FOLDER_ID: ${{ secrets.GDRIVE_RELEASE_FOLDER_ID }}
+          FW_VERSION: ${{ steps.version.outputs.version }}
+          FW_TAG: ${{ steps.version.outputs.tag }}
+          FW_TAG_TYPE: ${{ steps.version.outputs.tag_type }}
+        run: |
+          python << 'SCRIPT'
+          import json
+          import os
+
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          credentials = service_account.Credentials.from_service_account_info(
+              json.loads(os.environ["GDRIVE_SA_KEY"]),
+              scopes=["https://www.googleapis.com/auth/drive.file"],
+          )
+
+          service = build("drive", "v3", credentials=credentials)
+          rc_root_id = os.environ["GDRIVE_RC_FOLDER_ID"]
+          release_root_id = os.environ["GDRIVE_RELEASE_FOLDER_ID"]
+          version = os.environ["FW_VERSION"]
+          tag = os.environ.get("FW_TAG", "")
+          tag_type = os.environ.get("FW_TAG_TYPE", "release")
+
+          BOARDS = ["AB-MOD", "AB-TRT", "AB-V2"]
+
+
+          def get_or_create_folder(name, parent_id):
+              """Find an existing folder by name under parent, or create it."""
+              query = (
+                  f"name='{name}' and '{parent_id}' in parents "
+                  f"and mimeType='application/vnd.google-apps.folder' and trashed=false"
+              )
+              results = service.files().list(
+                  q=query, fields="files(id)",
+                  supportsAllDrives=True, includeItemsFromAllDrives=True,
+              ).execute()
+              files = results.get("files", [])
+              if files:
+                  return files[0]["id"]
+
+              metadata = {
+                  "name": name,
+                  "mimeType": "application/vnd.google-apps.folder",
+                  "parents": [parent_id],
+              }
+              folder = service.files().create(
+                  body=metadata, fields="id", supportsAllDrives=True,
+              ).execute()
+              print(f"Created folder: {name}")
+              return folder["id"]
+
+
+          def upload_file(file_path, parent_id, dest_name=None):
+              """Upload a file, replacing it if it already exists."""
+              name = dest_name or os.path.basename(file_path)
+
+              query = (
+                  f"name='{name}' and '{parent_id}' in parents "
+                  f"and mimeType!='application/vnd.google-apps.folder' and trashed=false"
+              )
+              results = service.files().list(
+                  q=query, fields="files(id)",
+                  supportsAllDrives=True, includeItemsFromAllDrives=True,
+              ).execute()
+              existing = results.get("files", [])
+
+              media = MediaFileUpload(file_path)
+
+              if existing:
+                  updated = service.files().update(
+                      fileId=existing[0]["id"],
+                      media_body=media,
+                      fields="id,name",
+                      supportsAllDrives=True,
+                  ).execute()
+                  print(f"Updated: {name}")
+              else:
+                  metadata = {"name": name, "parents": [parent_id]}
+                  created = service.files().create(
+                      body=metadata,
+                      media_body=media,
+                      fields="id,name",
+                      supportsAllDrives=True,
+                  ).execute()
+                  print(f"Uploaded: {name}")
+
+
+          def upload_firmware(root_folder_id, version, tag):
+              """Upload firmware to a Drive folder with the appropriate hierarchy."""
+              version_folder_id = get_or_create_folder(version, root_folder_id)
+
+              # If there's a tag (rc1, hf1, etc.), create a subfolder for it
+              if tag:
+                  parent_folder_id = get_or_create_folder(tag, version_folder_id)
+              else:
+                  parent_folder_id = version_folder_id
+
+              # Upload board firmware: <board>/arduplane.apj
+              for board in BOARDS:
+                  board_folder_id = get_or_create_folder(board, parent_folder_id)
+                  apj_path = os.path.join("firmware_artifacts", f"firmware-{board}", "arduplane.apj")
+                  if os.path.exists(apj_path):
+                      upload_file(apj_path, board_folder_id)
+                  else:
+                      print(f"WARNING: {apj_path} not found")
+
+              # Upload SITL arduplane.exe
+              sitl_exe = os.path.join("sitl_artifacts", "arduplane.exe")
+              if os.path.exists(sitl_exe):
+                  upload_file(sitl_exe, parent_folder_id)
+              else:
+                  print(f"WARNING: {sitl_exe} not found")
+
+
+          if tag_type == "rc":
+              # RC versions go to the RC folder only
+              print(f"=== Uploading RC build to RC folder: {version}/{tag} ===")
+              upload_firmware(rc_root_id, version, tag)
+          else:
+              # Releases and hotfixes go to the release folder
+              print(f"=== Uploading to release folder: {version}/{tag or '(root)'} ===")
+              upload_firmware(release_root_id, version, tag)
+
+          print("Done.")
+          SCRIPT
