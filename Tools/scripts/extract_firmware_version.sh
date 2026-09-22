@@ -5,7 +5,7 @@
 #   "AB ArduPlane V4.6.3.1 rc13 - TRT Mod"  -> version=4.6.3.1 tag=rc13 tag_type=rc
 #   "Airbound ArduPlane V6.5.7.9 - hf1"     -> version=6.5.7.9 tag=hf1  tag_type=hf
 #   "AB ArduPlane V4.6.3.1 dev - BranchConsolidation v1"
-#                                           -> version=4.6.3.1 tag=     tag_type=release
+#                                           -> version=4.6.3.1 tag=dev  tag_type=dev
 #
 # Results are appended to $GITHUB_OUTPUT when set, otherwise printed to stdout.
 #
@@ -26,15 +26,18 @@ if ! VERSION=$(echo "${RAW}" | grep -oP 'V\K[0-9]+(\.[0-9]+)+'); then
 fi
 echo "version=${VERSION}" >> "${OUTPUT}"
 
-# tag: rc1, rc6, hf1, hf2, etc.
-TAG_NUM=$(echo "${RAW}" | grep -oiP '(rc|hf)\K[0-9]+' | head -1 || true)
-TAG_PREFIX=$(echo "${RAW}" | grep -oiP '(rc|hf)(?=[0-9])' | head -1 | tr '[:upper:]' '[:lower:]' || true)
-if [ -n "${TAG_NUM}" ]; then
-    echo "tag=${TAG_PREFIX}${TAG_NUM}" >> "${OUTPUT}"
+# tag: rc1, rc6, hf1, hf2, dev, dev2, etc.
+# A tag starts the string or follows a space, "_", "+" or "-"; \K drops that delimiter from the match
+# rc and hf require a number, dev does not
+# The trailing guard on dev keeps it out of "development", "devel" and "device", and rejects "dev2Feature"
+TAG=$(echo "${RAW}" | grep -oiP '(?:^|[\s_+\-])\K((?:rc|hf)\d+|dev\d*(?![A-Za-z0-9]))' | head -1 | tr '[:upper:]' '[:lower:]' || true)
+TAG_PREFIX=${TAG//[0-9]/}
+if [ -n "${TAG}" ]; then
+    echo "tag=${TAG}" >> "${OUTPUT}"
     echo "tag_type=${TAG_PREFIX}" >> "${OUTPUT}"
 else
     echo "tag=" >> "${OUTPUT}"
     echo "tag_type=release" >> "${OUTPUT}"
 fi
 
-echo "Parsed version=${VERSION} tag=${TAG_PREFIX}${TAG_NUM:-none} type=${TAG_PREFIX:-release}"
+echo "Parsed version=${VERSION} tag=${TAG:-none} type=${TAG_PREFIX:-release}"

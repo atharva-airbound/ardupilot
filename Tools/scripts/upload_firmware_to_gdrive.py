@@ -3,7 +3,7 @@
 """
 Upload CI-built firmware to Google Drive.
 
-RC builds go to the RC root, releases and hotfixes to the release root:
+RC and dev builds go to the RC root, releases and hotfixes to the release root:
   <root>/<version>/[<tag>/]<board>/arduplane.apj
   <root>/<version>/[<tag>/]arduplane.exe
 
@@ -13,7 +13,7 @@ Expects the layout produced by the build_and_upload workflow's download steps:
 
 Configured through environment variables:
   GDRIVE_SA_KEY             service account key JSON
-  GDRIVE_RC_FOLDER_ID       Drive folder ID for RC builds
+  GDRIVE_RC_FOLDER_ID       Drive folder ID for RC and dev builds
   GDRIVE_RELEASE_FOLDER_ID  Drive folder ID for releases and hotfixes
   FW_VERSION, FW_TAG, FW_TAG_TYPE  output of extract_firmware_version.sh
 
@@ -28,6 +28,9 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 BOARDS = ["AB-MOD", "AB-TRT", "AB-V2"]
+
+# tag types that upload to the RC root rather than the release root
+RC_TAG_TYPES = ("rc", "dev")
 
 
 def get_or_create_folder(service, name, parent_id):
@@ -131,9 +134,9 @@ def main():
     tag = os.environ.get("FW_TAG", "")
     tag_type = os.environ.get("FW_TAG_TYPE", "release")
 
-    if tag_type == "rc":
-        # RC versions go to the RC folder only
-        print(f"=== Uploading RC build to RC folder: {version}/{tag} ===")
+    if tag_type in RC_TAG_TYPES:
+        # RC and dev versions go to the RC folder only
+        print(f"=== Uploading {tag_type} build to RC folder: {version}/{tag} ===")
         upload_firmware(service, rc_root_id, version, tag)
     else:
         # Releases and hotfixes go to the release folder
