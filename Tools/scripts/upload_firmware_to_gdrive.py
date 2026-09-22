@@ -124,7 +124,7 @@ def upload_firmware(service, root_folder_id, version, tag):
 def main():
     credentials = service_account.Credentials.from_service_account_info(
         json.loads(os.environ["GDRIVE_SA_KEY"]),
-        scopes=["https://www.googleapis.com/auth/drive.file"],
+        scopes=["https://www.googleapis.com/auth/drive"],
     )
 
     service = build("drive", "v3", credentials=credentials)
