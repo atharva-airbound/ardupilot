@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 
 # Parse THISFIRMWARE from a vehicle version.h into the version, tag and tag type
-# that decide the Google Drive upload folder:
-#   "AB ArduPlane V4.6.3.1 rc13 - TRT Mod"  -> version=4.6.3.1 tag=rc13 tag_type=rc
-#   "Airbound ArduPlane V6.5.7.9 - hf1"     -> version=6.5.7.9 tag=hf1  tag_type=hf
-#   "AB ArduPlane V4.6.3.1 dev - BranchConsolidation v1"
-#                                           -> version=4.6.3.1 tag=dev  tag_type=dev
+# that decide the Google Drive upload folder and the label:
 #
 # Results are appended to $GITHUB_OUTPUT when set, otherwise printed to stdout.
 #
@@ -27,11 +23,15 @@ fi
 echo "version=${VERSION}" >> "${OUTPUT}"
 
 # tag: rc1, rc6, hf1, hf2, dev, dev2, etc.
-# A tag starts the string or follows a space, "_", "+" or "-"; \K drops that delimiter from the match
-# rc and hf require a number, dev does not
-# The trailing guard on dev keeps it out of "development", "devel" and "device", and rejects "dev2Feature"
-TAG=$(echo "${RAW}" | grep -oiP '(?:^|[\s_+\-])\K((?:rc|hf)\d+|dev\d*(?![A-Za-z0-9]))' | head -1 | tr '[:upper:]' '[:lower:]' || true)
+# A tag starts the string or follows a space, "_", "+" or "-"
+TAG_DELIM='(?:^|[\s_+\-])'
+TAG_BODY='(?:(?:rc|hf)\d+|dev\d*(?![A-Za-z0-9]))'
+TAG=$(echo "${RAW}" | grep -oiP "${TAG_DELIM}\\K${TAG_BODY}" | head -1 | tr '[:upper:]' '[:lower:]' || true)
 TAG_PREFIX=${TAG//[0-9]/}
+
+# label: the text after the tag, minus leading delimiters
+LABEL=$(echo "${RAW}" | grep -oiP "${TAG_DELIM}${TAG_BODY}\\K.*" | head -1 | sed -E 's/^[[:space:]_+-]+//; s/[[:space:]]+$//' || true)
+
 if [ -n "${TAG}" ]; then
     echo "tag=${TAG}" >> "${OUTPUT}"
     echo "tag_type=${TAG_PREFIX}" >> "${OUTPUT}"
@@ -39,5 +39,6 @@ else
     echo "tag=" >> "${OUTPUT}"
     echo "tag_type=release" >> "${OUTPUT}"
 fi
+echo "label=${LABEL}" >> "${OUTPUT}"
 
-echo "Parsed version=${VERSION} tag=${TAG:-none} type=${TAG_PREFIX:-release}"
+echo "Parsed version=${VERSION} tag=${TAG:-none} type=${TAG_PREFIX:-release} label=${LABEL:-none}"
